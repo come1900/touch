@@ -46,28 +46,28 @@ C_OBJ = $(patsubst %c, %o, $(C_SRC))
 CPP_SRC = $(wildcard *.cpp)
 CPP_OBJ = $(patsubst %cpp, %o, $(CPP_SRC))
 PROGS =
-PROGS += burning-client
-PROGS += burning-server
+PROGS += touch-cli
+PROGS += touch-svr
 
 .PHONY:all clean
 
 all:$(CPP_OBJ) $(C_OBJ) $(PROGS)
 
 # 原生 WebSocket 客户端可执行程序
-burning-client: burning-client.o ez_wsclient-native.o
+touch-cli: touch-cli.o ez_wsclient-native.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
-burning-client.o: burning-client.c ez_wsclient-native.h
+touch-cli.o: touch-cli.c ez_wsclient-native.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 ez_wsclient-native.o: ez_wsclient-native.c ez_wsclient-native.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # libwebsockets WebSocket 服务器可执行程序
-burning-server: burning-server.o
+touch-svr: touch-svr.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
-burning-server.o: burning-server.c
+touch-svr.o: touch-svr.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 .c.o:

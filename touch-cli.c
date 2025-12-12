@@ -1,5 +1,5 @@
 /*
- * burning-client.c
+ * touch-cli.c
  *
  * WebSocket 客户端使用示例程序
  * 使用 ez_wsclient-native 组件
