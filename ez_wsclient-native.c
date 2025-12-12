@@ -6,31 +6,30 @@
  * 不依赖 libwebsockets 库
  */
 
-#include "ez_wsclient-native.h"
-
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <pthread.h>
-#include <unistd.h>
-#include <errno.h>
-#include <time.h>
-#include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <sys/timerfd.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
 
-#include "ezutil/base64.h"
-#include "ezutil/sha1.h"
-#include "ezutil/str_opr.h"
-#include "ezutil/http_parser.h"
+#include <ezutil/base64.h>
+#include <ezutil/ez_websocket_parser.h>
+#include <ezutil/http_parser.h>
+#include <ezutil/sha1.h>
+#include <ezutil/str_opr.h>
 
-#include "ezutil/ez_websocket_parser.h"
 #include "__def_debug.h"
+#include "ez_wsclient-native.h"
 
 /* ================== 链路保活配置 ================== */
 #define EZ_WS_CLIENT_PING_INTERVAL_MS      (30 * 1000)   /* 无业务流量时发送 ping */
@@ -155,8 +154,8 @@ struct ez_ws_client_handle {
 	char *http_sec_websocket_accept;
 	
 	/* WebSocket 解析器 */
-	websocket_parser ws_parser;
-	websocket_parser_settings ws_parser_settings;
+	ez_websocket_parser ws_parser;
+	ez_websocket_parser_settings ws_parser_settings;
 	struct ez_ws_frame_data current_frame;
 	
 	/* 接收缓冲区 */
@@ -210,7 +209,7 @@ static void generate_websocket_key(char *key, size_t key_size) {
 /* 计算WebSocket Accept值 */
 static int compute_accept(const char *key, char *accept) {
 	char combined[256];
-	snprintf(combined, sizeof(combined), "%s%s", key, WEBSOCKET_MAGIC_STRING);
+	snprintf(combined, sizeof(combined), "%s%s", key, EZ_WEBSOCKET_MAGIC_STRING);
 	
 	char hash2[SHA1HashSize] = {0};
 
@@ -414,7 +413,7 @@ static int create_ws_frame(const uint8_t *payload, size_t payload_len,
 }
 
 /* WebSocket 解析器回调：帧开始 */
-static int on_ws_frame_begin(websocket_parser *parser) {
+static int on_ws_frame_begin(ez_websocket_parser *parser) {
 	struct ez_ws_client_handle *ws = (struct ez_ws_client_handle *)parser->data;
 	
 	/* 调试：打印帧开始信息 */
@@ -426,7 +425,7 @@ static int on_ws_frame_begin(websocket_parser *parser) {
 	
 	/* 初始化帧数据收集器 */
 	ws->current_frame.opcode = parser->opcode;
-	ws->current_frame.is_binary = (parser->opcode == WS_OPCODE_BINARY);
+	ws->current_frame.is_binary = (parser->opcode == EZ_WS_OPCODE_BINARY);
 	ws->current_frame.buffer_size = 0;
 	ws->current_frame.buffer_cap = 65536;
 	ws->current_frame.buffer = malloc(ws->current_frame.buffer_cap);
@@ -441,7 +440,7 @@ static int on_ws_frame_begin(websocket_parser *parser) {
 }
 
 /* WebSocket 解析器回调：帧负载 */
-static int on_ws_frame_payload(websocket_parser *parser, const char *at, size_t length) {
+static int on_ws_frame_payload(ez_websocket_parser *parser, const char *at, size_t length) {
 	struct ez_ws_client_handle *ws = (struct ez_ws_client_handle *)parser->data;
 	
 	/* 调试：打印接收到的原始数据 */
@@ -475,13 +474,13 @@ static int on_ws_frame_payload(websocket_parser *parser, const char *at, size_t 
 }
 
 /* WebSocket 解析器回调：帧完成 */
-static int on_ws_frame_complete(websocket_parser *parser) {
+static int on_ws_frame_complete(ez_websocket_parser *parser) {
 	struct ez_ws_client_handle *ws = (struct ez_ws_client_handle *)parser->data;
 	
 	/* 处理不同类型的帧 */
 	switch (ws->current_frame.opcode) {
-	case WS_OPCODE_TEXT:
-	case WS_OPCODE_BINARY:
+	case EZ_WS_OPCODE_TEXT:
+	case EZ_WS_OPCODE_BINARY:
 		{
 			LOG_DEBUG("on_ws_frame_complete: opcode=%d, buffer_size=%zu\n", 
 			          ws->current_frame.opcode, ws->current_frame.buffer_size);
@@ -520,16 +519,16 @@ static int on_ws_frame_complete(websocket_parser *parser) {
 		}
 		break;
 		
-	case WS_OPCODE_CLOSE:
+	case EZ_WS_OPCODE_CLOSE:
 		LOG_INFO("=== Connection closed by server ===\n");
 		/* 关闭帧是合法的，不需要返回错误 */
 		/* 解析器会通过 close_received 标志来处理 */
 		break;
 		
-	case WS_OPCODE_PING:
+	case EZ_WS_OPCODE_PING:
 		/* 发送 Pong 响应 */
 		{
-			if (ez_ws_send_control_frame(ws, WS_OPCODE_PONG,
+			if (ez_ws_send_control_frame(ws, EZ_WS_OPCODE_PONG,
 						  ws->current_frame.buffer,
 						  ws->current_frame.buffer_size) < 0) {
 				LOG_WARN("Failed to reply pong, closing connection soon if problem persists\n");
@@ -537,7 +536,7 @@ static int on_ws_frame_complete(websocket_parser *parser) {
 		}
 		break;
 		
-	case WS_OPCODE_PONG:
+	case EZ_WS_OPCODE_PONG:
 		/* 心跳响应 */
 		ws->awaiting_pong = 0;
 		{
@@ -618,7 +617,7 @@ static int ez_ws_connect(struct ez_ws_client_handle *ws) {
 	
 	/* 重置接收缓冲区和解析器 */
 	ws->recv_buffer_len = 0;
-	websocket_parser_init(&ws->ws_parser);
+	ez_websocket_parser_init(&ws->ws_parser);
 	ws->ws_parser.data = ws;
 	SAFE_FREE(ws->current_frame.buffer);
 	ws->current_frame.buffer_size = 0;
@@ -738,8 +737,8 @@ static int ez_ws_handle_data(struct ez_ws_client_handle *ws) {
 		ws->last_activity_time_ms = now_ms;
 	}
 	
-	/* 使用 websocket_parser 解析数据（从缓冲区开始解析） */
-	size_t parsed = websocket_parser_execute(&ws->ws_parser, &ws->ws_parser_settings,
+	/* 使用 ez_websocket_parser 解析数据（从缓冲区开始解析） */
+	size_t parsed = ez_websocket_parser_execute(&ws->ws_parser, &ws->ws_parser_settings,
 	                                        (const char *)ws->recv_buffer,
 	                                        ws->recv_buffer_len);
 	
@@ -749,9 +748,9 @@ static int ez_ws_handle_data(struct ez_ws_client_handle *ws) {
 		return -1;
 	}
 	
-	if (WEBSOCKET_PARSER_ERRNO(&ws->ws_parser) != WSE_OK) {
+	if (EZ_WEBSOCKET_PARSER_ERRNO(&ws->ws_parser) != EZ_WSE_OK) {
 		LOG_ERROR("WebSocket parse error: %s\n",
-		          websocket_errno_description(WEBSOCKET_PARSER_ERRNO(&ws->ws_parser)));
+		          ez_websocket_errno_description(EZ_WEBSOCKET_PARSER_ERRNO(&ws->ws_parser)));
 			return -1;
 		}
 		
@@ -824,7 +823,7 @@ static int ez_ws_send_internal(struct ez_ws_client_handle *ws, const void *data,
 	}
 	
 	/* 创建新的帧（按需分配缓冲） */
-	size_t frame_cap = len + WS_MAX_FRAME_OVERHEAD;
+	size_t frame_cap = len + EZ_WS_MAX_FRAME_OVERHEAD;
 	uint8_t *frame = malloc(frame_cap);
 	size_t frame_len;
 	
@@ -906,8 +905,8 @@ static int ez_ws_send_control_frame(struct ez_ws_client_handle *ws, int opcode,
 	if (len && !payload)
 		return -1;
 
-	size_t frame_cap = len + WS_MAX_FRAME_OVERHEAD;
-	uint8_t stack_buf[WS_MAX_FRAME_OVERHEAD + 128];
+	size_t frame_cap = len + EZ_WS_MAX_FRAME_OVERHEAD;
+	uint8_t stack_buf[EZ_WS_MAX_FRAME_OVERHEAD + 128];
 	uint8_t *frame = stack_buf;
 
 	if (frame_cap > sizeof(stack_buf)) {
@@ -995,7 +994,7 @@ static void ez_ws_client_handle_reset(struct ez_ws_client_handle *ws, unsigned i
 	
 	if (reset_flags & EZ_WS_RESET_WS) {
 		ws->recv_buffer_len = 0;
-		websocket_parser_init(&ws->ws_parser);
+		ez_websocket_parser_init(&ws->ws_parser);
 		ws->ws_parser.data = ws;
 		
 		SAFE_FREE(ws->current_frame.buffer);
@@ -1250,7 +1249,7 @@ int ez_ws_service_exec(struct ez_ws_client_handle *ws, int timeout_ms) {
 					continue;
 				}
 			} else if (now_ms - ws->last_activity_time_ms >= EZ_WS_CLIENT_PING_INTERVAL_MS) {
-				if (ez_ws_send_control_frame(ws, WS_OPCODE_PING, NULL, 0) == 0) {
+				if (ez_ws_send_control_frame(ws, EZ_WS_OPCODE_PING, NULL, 0) == 0) {
 					ws->awaiting_pong = 1;
 					ws->last_ping_time_ms = now_ms;
 					LOG_INFO("Ping sent to server\n");
@@ -1298,7 +1297,7 @@ int ez_ws_send_text(struct ez_ws_client_handle *ws, const char *data, size_t len
 			memcpy(node->data, data, len);
 			node->data[len] = '\0';
 			node->len = len;
-			node->opcode = WS_OPCODE_TEXT;
+			node->opcode = EZ_WS_OPCODE_TEXT;
 			node->next = NULL;
 			
 			pthread_mutex_lock(&ws->send_queue_lock);
@@ -1316,7 +1315,7 @@ int ez_ws_send_text(struct ez_ws_client_handle *ws, const char *data, size_t len
 		return EZ_WS_ERR_NOT_CONNECTED;
 	}
 	
-	return ez_ws_send_internal(ws, data, len, WS_OPCODE_TEXT);
+	return ez_ws_send_internal(ws, data, len, EZ_WS_OPCODE_TEXT);
 }
 
 /* 公共API：发送二进制 */
@@ -1327,7 +1326,7 @@ int ez_ws_send_binary(struct ez_ws_client_handle *ws, const void *data, size_t l
 	if (ws->state != EZ_WS_STATE_CONNECTED)
 		return EZ_WS_ERR_NOT_CONNECTED;
 	
-	return ez_ws_send_internal(ws, data, len, WS_OPCODE_BINARY);
+	return ez_ws_send_internal(ws, data, len, EZ_WS_OPCODE_BINARY);
 }
 
 /* 公共API：检查连接状态 */
@@ -1404,9 +1403,9 @@ struct ez_ws_client_handle *ez_ws_client_handle_create(struct ez_ws_client_confi
 	ws->http_parser_settings.on_headers_complete = on_http_headers_complete;
 	
 	/* 初始化 WebSocket 解析器 */
-	websocket_parser_init(&ws->ws_parser);
+	ez_websocket_parser_init(&ws->ws_parser);
 	ws->ws_parser.data = ws;
-	websocket_parser_settings_init(&ws->ws_parser_settings);
+	ez_websocket_parser_settings_init(&ws->ws_parser_settings);
 	ws->ws_parser_settings.on_frame_begin = on_ws_frame_begin;
 	ws->ws_parser_settings.on_frame_payload = on_ws_frame_payload;
 	ws->ws_parser_settings.on_frame_complete = on_ws_frame_complete;

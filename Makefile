@@ -8,7 +8,7 @@ PLATFORM = linux
 #PLATFORM = linux-mips-openwrt
 #PLATFORM = linux-mips-mipsl-openwrt
 
-include         ../../library/Makefile.Defines/Makefile.Defines.$(PLATFORM)
+include         ../lazaru/Makefile.Defines/Makefile.Defines.$(PLATFORM)
 
 # include         ../../this.def
 
