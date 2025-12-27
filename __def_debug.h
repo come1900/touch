@@ -1,3 +1,19 @@
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
+/*
+ * __def_debug.h - Debug Definition Header
+ *
+ * Copyright (C) 2011 ezlibs.com, All Rights Reserved.
+ *
+ * $Id: __def_debug.h 1 2011-12-27 20:00:00Z WHF $
+ *
+ * Explain:
+ *     Debug definition header file with logging macros and utilities.
+ *
+ * Update:
+ *     2011-12-27 20:00:00 WHF Create
+ */
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
+
 #ifndef EZ_DEF_DEVEL_DEBUG_H
 #define EZ_DEF_DEVEL_DEBUG_H
 

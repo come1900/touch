@@ -1,10 +1,20 @@
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 /*
- * ez_wsclient-native.c
+ * ez_wsclient-native.c - Native Linux WebSocket Client Implementation
  *
- * 原生 Linux WebSocket 客户端组件实现
- * 使用 epoll、timerfd、socket 等 Linux 基本功能
- * 不依赖 libwebsockets 库
+ * Copyright (C) 2011 ezlibs.com, All Rights Reserved.
+ *
+ * $Id: ez_wsclient-native.c 1 2011-12-27 20:00:00Z WHF $
+ *
+ * Explain:
+ *     Native Linux WebSocket client component implementation.
+ *     Uses epoll, timerfd, socket and other Linux basic functions.
+ *     Does not depend on libwebsockets library.
+ *
+ * Update:
+ *     2011-12-27 20:00:00 WHF Create
  */
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 
 #include <arpa/inet.h>
 #include <errno.h>

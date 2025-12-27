@@ -1,10 +1,20 @@
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 /*
- * ez_wsclient-native.h
+ * ez_wsclient-native.h - Native Linux WebSocket Client Header
  *
- * 原生 Linux WebSocket 客户端组件头文件
- * 使用 epoll、timerfd、socket 等 Linux 基本功能
- * 不依赖 libwebsockets 库
+ * Copyright (C) 2011 ezlibs.com, All Rights Reserved.
+ *
+ * $Id: ez_wsclient-native.h 1 2011-12-27 20:00:00Z WHF $
+ *
+ * Explain:
+ *     Native Linux WebSocket client component header file.
+ *     Uses epoll, timerfd, socket and other Linux basic functions.
+ *     Does not depend on 3rd library.
+ *
+ * Update:
+ *     2011-12-27 20:00:00 WHF Create
  */
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 
 #ifndef EZ_WSCLIENT_NATIVE_H
 #define EZ_WSCLIENT_NATIVE_H

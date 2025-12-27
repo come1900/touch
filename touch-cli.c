@@ -1,9 +1,18 @@
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 /*
- * touch-cli.c
+ * touch-cli.c - WebSocket Client Example Program
  *
- * WebSocket 客户端使用示例程序
- * 使用 ez_wsclient-native 组件
+ * Copyright (C) 2011 ezlibs.com, All Rights Reserved.
+ *
+ * $Id: touch-cli.c 1 2011-12-27 20:00:00Z WHF $
+ *
+ * Explain:
+ *     WebSocket client example program using ez_wsclient-native component.
+ *
+ * Update:
+ *     2011-12-27 20:00:00 WHF Create
  */
+/*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 
 #define _POSIX_C_SOURCE 200809L
 #include <string.h>

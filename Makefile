@@ -64,10 +64,13 @@ ez_wsclient-native.o: ez_wsclient-native.c ez_wsclient-native.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # libwebsockets WebSocket 服务器可执行程序
-touch-svr: touch-svr.o
+touch-svr: touch-svr.o ez_wsserver-libwebsocket.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
-touch-svr.o: touch-svr.c
+touch-svr.o: touch-svr.c ez_wsserver-libwebsocket.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+ez_wsserver-libwebsocket.o: ez_wsserver-libwebsocket.c ez_wsserver-libwebsocket.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 .c.o:
