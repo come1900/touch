@@ -161,10 +161,6 @@ struct ez_ws_server_handle {
 	struct vhd_minimal_server_echo *vhd;  /* 虚拟主机数据，用于访问ws API */
 	int *interrupted;
 
-	/* 线程相关 */
-	pthread_t ws_thread;     /* websocket运行线程 */
-	int ws_running;          /* websocket线程运行标志 */
-
 	/* 配置 */
 	struct ez_ws_server_config config;
 
@@ -946,29 +942,6 @@ static const struct lws_extension extensions[] = {
 	{ NULL, NULL, NULL /* terminator */ }
 };
 
-/*
- * WebSocket线程函数
- */
-static void*
-ez_ws_server_thread_func(void *arg)
-{
-	struct ez_ws_server_handle *handle = (struct ez_ws_server_handle *)arg;
-	int n = 0;
-	
-	if (!handle || !handle->context)
-		return NULL;
-	
-	lwsl_user("[ws_thread] WebSocket thread started\n");
-	handle->ws_running = 1;
-	
-	while (n >= 0 && handle->ws_running && !(*handle->interrupted)) {
-		n = lws_service(handle->context, 0);
-	}
-	
-	lwsl_user("[ws_thread] WebSocket thread exiting\n");
-	handle->ws_running = 0;
-	return NULL;
-}
 
 /*
  * 创建WebSocket服务端句柄
@@ -1005,7 +978,6 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 	memset(handle, 0, sizeof(struct ez_ws_server_handle));
 	handle->config = *config;
 	handle->interrupted = &interrupted;
-	handle->ws_running = 0;
 
 	/* 设置全局handle（用于在回调中访问） */
 	g_ws_server_handle = handle;
@@ -1095,41 +1067,6 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 	return handle;
 }
 
-/*
- * 启动WebSocket服务端（在独立线程中运行）
- */
-int ez_ws_server_start(struct ez_ws_server_handle *ws)
-{
-	if (!ws || !ws->context)
-		return EZ_WS_SERVER_ERR_INVALID_PARAM;
-	
-	ws->ws_running = 0;
-	if (pthread_create(&ws->ws_thread, NULL, ez_ws_server_thread_func, ws) != 0) {
-		lwsl_err("Failed to create WebSocket thread\n");
-		return EZ_WS_SERVER_ERR_INVALID_PARAM;
-	}
-	
-	return EZ_WS_SERVER_OK;
-}
-
-/*
- * 停止WebSocket服务端
- */
-void ez_ws_server_stop(struct ez_ws_server_handle *ws)
-{
-	if (!ws)
-		return;
-	
-	/* 设置停止标志 */
-	ws->ws_running = 0;
-	if (ws->context)
-		lws_cancel_service(ws->context);
-	
-	/* 等待线程结束 */
-	if (ws->ws_thread) {
-		pthread_join(ws->ws_thread, NULL);
-	}
-}
 
 /*
  * 清理WebSocket服务端
@@ -1139,8 +1076,7 @@ void ez_ws_server_cleanup(struct ez_ws_server_handle *ws)
 	if (!ws)
 		return;
 	
-	/* 停止服务 */
-	ez_ws_server_stop(ws);
+	/* 注意：线程停止逻辑现在在外部处理 */
 	
 	/* 销毁context */
 	if (ws->context)
@@ -1227,9 +1163,10 @@ int ez_ws_server_get_client_count(struct ez_ws_server_handle *ws)
  */
 int ez_ws_server_is_running(struct ez_ws_server_handle *ws)
 {
+	/* 由于线程逻辑移到外部，此函数现在返回context是否有效 */
 	if (!ws)
 		return 0;
-	
-	return ws->ws_running ? 1 : 0;
+
+	return ws->context ? 1 : 0;
 }
 

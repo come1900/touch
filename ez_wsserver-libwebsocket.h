@@ -88,23 +88,10 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 void ez_ws_server_cleanup(struct ez_ws_server_handle *ws);
 
 /**
- * 启动WebSocket服务端（在独立线程中运行）
- * @param ws 服务端句柄
- * @return EZ_WS_SERVER_OK表示成功，其他值表示错误
- */
-int ez_ws_server_start(struct ez_ws_server_handle *ws);
-
-/**
- * 停止WebSocket服务端
- * @param ws 服务端句柄
- */
-void ez_ws_server_stop(struct ez_ws_server_handle *ws);
-
-/**
  * WebSocket服务执行函数 - 执行一次事件循环迭代
- * 该函数应该在外部线程中循环调用（如果未使用 ez_ws_server_start）
+ * 该函数应该在外部线程中循环调用
  * @param ws 服务端句柄
- * @param timeout_ms 超时时间（毫秒），0表示使用默认超时
+ * @param timeout_ms 超时时间（毫秒），此参数被忽略（libwebsockets v3.2+ 内部使用智能调度）
  * @return 0表示继续运行，-1表示应该停止
  */
 int ez_ws_server_service_exec(struct ez_ws_server_handle *ws, int timeout_ms);

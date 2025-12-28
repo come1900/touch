@@ -51,6 +51,22 @@ struct console_handle {
 };
 
 static int interrupted = 0;
+static pthread_t ws_thread;
+
+/* WebSocket 服务端线程函数 */
+static void* ws_server_thread_func(void *arg) {
+	struct ez_ws_server_handle *handle = (struct ez_ws_server_handle *)arg;
+	int n = 0;
+
+	lwsl_user("[ws_thread] WebSocket thread started\n");
+
+	while (n >= 0 && !interrupted) {
+		n = ez_ws_server_service_exec(handle, 0);
+	}
+
+	lwsl_user("[ws_thread] WebSocket thread exiting\n");
+	return NULL;
+}
 
 /* WebSocket 连接建立回调函数 */
 static void ws_server_on_connected(int client_id, const char *ip, int port, void *user_data) {
@@ -387,8 +403,8 @@ int main(int argc, const char **argv)
 	}
 
 	/* 7. 启动WebSocket线程 */
-	if (ez_ws_server_start(server_handle) != EZ_WS_SERVER_OK) {
-		lwsl_err("Failed to start WebSocket thread\n");
+	if (pthread_create(&ws_thread, NULL, ws_server_thread_func, server_handle) != 0) {
+		lwsl_err("Failed to create WebSocket thread\n");
 		console_cleanup(console);
 		ez_ws_server_cleanup(server_handle);
 		return 1;
@@ -397,7 +413,9 @@ int main(int argc, const char **argv)
 	/* 8. 启动Console线程 */
 	if (console_start(console) != 0) {
 		lwsl_err("Failed to start console thread\n");
-		ez_ws_server_stop(server_handle);
+		/* 停止WebSocket线程 */
+		interrupted = 1;
+		pthread_join(ws_thread, NULL);
 		console_cleanup(console);
 		ez_ws_server_cleanup(server_handle);
 		return 1;
@@ -415,8 +433,13 @@ int main(int argc, const char **argv)
 	
 	/* 停止线程 */
 	console_stop(console);
-	ez_ws_server_stop(server_handle);
-	
+
+	/* 停止WebSocket服务 */
+	interrupted = 1;
+
+	/* 等待WebSocket线程结束 */
+	pthread_join(ws_thread, NULL);
+
 	/* 清理资源 */
 	console_cleanup(console);
 	ez_ws_server_cleanup(server_handle);
