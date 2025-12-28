@@ -119,5 +119,5 @@ For server (libwebsockets-based):
 - **Interactive console** interface for server control
 
 ## License
-
 MIT License
+
