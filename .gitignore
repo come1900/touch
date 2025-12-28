@@ -1,0 +1,48 @@
+# Build artifacts and intermediate files
+*.o
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+
+# Executables
+touch-cli
+touch-svr
+
+# Temporary files
+*~
+*.tmp
+*.swp
+*.bak
+*.orig
+*.rej
+*.d
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Build directories
+build/
+dist/
+bin/
+
+# Log files
+*.log
+*.out
+
+# Core dumps
+core
+core.*
