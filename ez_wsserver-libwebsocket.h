@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -129,6 +130,35 @@ int ez_ws_server_get_client_count(struct ez_ws_server_handle *ws);
  * @return 1表示正在运行，0表示未运行
  */
 int ez_ws_server_is_running(struct ez_ws_server_handle *ws);
+
+/**
+ * 客户端信息结构（用于遍历客户端列表）
+ */
+struct ez_ws_client_info {
+	int id;              /* 客户端ID */
+	char ip[64];         /* 客户端IP地址 */
+	int port;            /* 客户端端口 */
+	time_t connect_time; /* 连接时间戳 */
+};
+
+/**
+ * 客户端列表遍历回调函数类型
+ * @param client_info 客户端信息
+ * @param user_data 用户自定义数据
+ * @return 返回0继续遍历，返回非0停止遍历
+ */
+typedef int (*ez_ws_server_foreach_client_cb)(const struct ez_ws_client_info *client_info, void *user_data);
+
+/**
+ * 遍历所有已连接的客户端
+ * @param ws 服务端句柄
+ * @param callback 遍历回调函数
+ * @param user_data 用户自定义数据
+ * @return EZ_WS_SERVER_OK表示成功，其他值表示错误
+ */
+int ez_ws_server_foreach_client(struct ez_ws_server_handle *ws, 
+                                 ez_ws_server_foreach_client_cb callback,
+                                 void *user_data);
 
 #ifdef __cplusplus
 }

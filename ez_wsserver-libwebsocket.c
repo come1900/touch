@@ -1170,3 +1170,40 @@ int ez_ws_server_is_running(struct ez_ws_server_handle *ws)
 	return ws->context ? 1 : 0;
 }
 
+/*
+ * 遍历所有已连接的客户端
+ */
+int ez_ws_server_foreach_client(struct ez_ws_server_handle *ws, 
+                                 ez_ws_server_foreach_client_cb callback,
+                                 void *user_data)
+{
+	if (!ws || !ws->vhd || !callback)
+		return EZ_WS_SERVER_ERR_INVALID_PARAM;
+	
+	pthread_mutex_lock(&ws->vhd->client_list_lock);
+	
+	struct client_info *client = ws->vhd->client_list;
+	int ret = 0;
+	
+	while (client) {
+		/* 填充客户端信息结构 */
+		struct ez_ws_client_info info;
+		info.id = client->id;
+		strncpy(info.ip, client->ip, sizeof(info.ip) - 1);
+		info.ip[sizeof(info.ip) - 1] = '\0';
+		info.port = client->port;
+		info.connect_time = client->connect_time;
+		
+		/* 调用回调函数 */
+		ret = callback(&info, user_data);
+		if (ret != 0)
+			break;  /* 回调返回非0，停止遍历 */
+		
+		client = client->next;
+	}
+	
+	pthread_mutex_unlock(&ws->vhd->client_list_lock);
+	
+	return EZ_WS_SERVER_OK;
+}
+

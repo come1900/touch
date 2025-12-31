@@ -110,6 +110,20 @@ static void ws_server_on_receive(int client_id, const void *data, size_t len, in
     }
 }
 
+/* 客户端列表打印回调函数 */
+struct list_client_context {
+    int index;
+};
+
+static int print_client_callback(const struct ez_ws_client_info *info, void *user_data) {
+    struct list_client_context *ctx = (struct list_client_context *)user_data;
+    time_t now = time(NULL);
+    int duration = (int)(now - info->connect_time);
+    lwsl_user("  [%d] ID=%d, IP=%s:%d, Connected=%ds ago\n", 
+              ctx->index++, info->id, info->ip, info->port, duration);
+    return 0;  /* 继续遍历 */
+}
+
 /* Console线程函数 - 完全独立于websocket */
 static void *
 console_thread_func(void *arg)
@@ -161,7 +175,9 @@ console_thread_func(void *arg)
                 if (count == 0) {
                     lwsl_user("  No clients connected\n");
                 } else {
-                    lwsl_user("  (Client list details not available in abstract API)\n");
+                    /* 使用回调函数遍历客户端列表 */
+                    struct list_client_context ctx = { .index = 1 };
+                    ez_ws_server_foreach_client(console->ws_handle, print_client_callback, &ctx);
                 }
                 lwsl_user("\n");
             } else {
