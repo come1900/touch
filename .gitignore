@@ -9,6 +9,8 @@
 # Executables
 touch-cli
 touch-svr
+touch-cli-*
+touch-svr-*
 
 # Temporary files
 *~

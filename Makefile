@@ -8,16 +8,16 @@ PLATFORM = linux
 #PLATFORM = linux-mips-openwrt
 #PLATFORM = linux-mips-mipsl-openwrt
 
+#PLATFORM = linux-mipsel-openwrt-linux
+
 include         ../lazaru/Makefile.Defines/Makefile.Defines.$(PLATFORM)
 
 # include         ../../this.def
 
-CFLAGS += -Wall 
+CFLAGS += -Wall
 CFLAGS +=  -O2
 CFLAGS +=  -g -std=c99
 CFLAGS += -D_POSIX_C_SOURCE=200809L
-#
-#CFLAGS += -DHAVE_ICONV
 
 CFLAGS += -I$(HOME)/libs/libwebsockets-$(PLATFORM)/include/
 # LIBS   += -L$(HOME)/libs/$(theName)-$(PLATFORM)/lib -l${theLibName}
@@ -46,15 +46,15 @@ C_OBJ = $(patsubst %c, %o, $(C_SRC))
 CPP_SRC = $(wildcard *.cpp)
 CPP_OBJ = $(patsubst %cpp, %o, $(CPP_SRC))
 PROGS =
-PROGS += touch-cli
-PROGS += touch-svr
+PROGS += touch-cli-$(PLATFORM)
+PROGS += touch-svr-$(PLATFORM)
 
 .PHONY:all clean
 
 all:$(CPP_OBJ) $(C_OBJ) $(PROGS)
 
 # 原生 WebSocket 客户端可执行程序
-touch-cli: touch-cli.o ez_wsclient-native.o
+touch-cli-$(PLATFORM): touch-cli.o ez_wsclient-native.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 touch-cli.o: touch-cli.c ez_wsclient-native.h
@@ -64,7 +64,7 @@ ez_wsclient-native.o: ez_wsclient-native.c ez_wsclient-native.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # libwebsockets WebSocket 服务器可执行程序
-touch-svr: touch-svr.o ez_wsserver-libwebsocket.o
+touch-svr-$(PLATFORM): touch-svr.o ez_wsserver-libwebsocket.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 touch-svr.o: touch-svr.c ez_wsserver-libwebsocket.h
@@ -87,3 +87,7 @@ test: ut-ez_websocket_parser
 dbg:
 	scp $(PROGS) $(CPP_OBJ) $(C_OBJ) root@10.229.164.21:/home/fsw/.whf
 	scp $(PROGS) $(CPP_OBJ) $(C_OBJ) root@10.57.147.45:/home/fsw/.whf
+
+# 显示当前编译的目标平台
+platform:
+	@echo "Building for platform: $(PLATFORM)"
