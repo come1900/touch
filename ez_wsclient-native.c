@@ -42,10 +42,47 @@
 #include "ez_wsclient-native.h"
 
 /* ================== 链路保活配置 ================== */
-#define EZ_WS_CLIENT_PING_INTERVAL_MS      (30 * 1000)   /* 无业务流量时发送 ping */
-#define EZ_WS_CLIENT_PONG_TIMEOUT_MS       (10 * 1000)   /* 等待 pong 最长毫秒数 */
+#define EZ_WS_CLIENT_PING_INTERVAL_MS      (10 * 1000)   /* 基础 ping 间隔（最小 1s），0 表示禁用客户端主动 ping */
+// #define EZ_WS_CLIENT_PING_INTERVAL_MS      (0 * 1000)   /* 基础 ping 间隔（最小 1s），0 表示禁用客户端主动 ping */
+#define EZ_WS_CLIENT_PING_JITTER_PERCENT   10            /* ping 间隔抖动百分比 (0-50)，推荐 10%，0 表示禁用抖动 */
+
 #define EZ_WS_CLIENT_IDLE_TIMEOUT_MS       (120 * 1000)  /* 超过该时间无任何业务流量则判定失效 */
-#define EZ_WS_CLIENT_HEARTBEAT_TICK_MS     5000  /* 心跳检测周期 */
+
+/* 根据 PING_INTERVAL 自动计算派生参数（保持合理比例） */
+#define EZ_WS_CLIENT_PONG_TIMEOUT_MS       (EZ_WS_CLIENT_PING_INTERVAL_MS / 3)   /* 等待 pong 超时 = ping间隔/3 */
+#define EZ_WS_CLIENT_HEARTBEAT_TICK_MS     (EZ_WS_CLIENT_PONG_TIMEOUT_MS / 2)    /* 心跳检测周期 = pong超时/2 */
+
+/* Ping 间隔抖动范围计算 */
+#define EZ_WS_CLIENT_PING_JITTER_MS \
+	((EZ_WS_CLIENT_PING_INTERVAL_MS * EZ_WS_CLIENT_PING_JITTER_PERCENT) / 100)
+
+#define EZ_WS_CLIENT_PING_INTERVAL_MIN_MS \
+	(EZ_WS_CLIENT_PING_INTERVAL_MS - EZ_WS_CLIENT_PING_JITTER_MS)
+
+#define EZ_WS_CLIENT_PING_INTERVAL_MAX_MS \
+	(EZ_WS_CLIENT_PING_INTERVAL_MS + EZ_WS_CLIENT_PING_JITTER_MS)
+
+/* 编译时检查：确保手动配置的参数设置合理 */
+
+/* 检查 PING_INTERVAL 是否合理（0 表示禁用，非 0 时最小 1 秒） */
+#if EZ_WS_CLIENT_PING_INTERVAL_MS > 0 && EZ_WS_CLIENT_PING_INTERVAL_MS < 1000
+#error "PING_INTERVAL should be 0 (disabled) or at least 1000ms (1 second)"
+#endif
+
+/* 检查 JITTER 百分比范围 (0-50%) */
+#if EZ_WS_CLIENT_PING_JITTER_PERCENT < 0 || EZ_WS_CLIENT_PING_JITTER_PERCENT > 50
+#error "PING_JITTER_PERCENT should be between 0 and 50 (0% to 50%)"
+#endif
+
+/* 检查 IDLE_TIMEOUT 是否足够大，考虑最大抖动情况（0 表示禁用，跳过检查） */
+#if EZ_WS_CLIENT_IDLE_TIMEOUT_MS > 0 && EZ_WS_CLIENT_IDLE_TIMEOUT_MS <= (2 * EZ_WS_CLIENT_PING_INTERVAL_MAX_MS + EZ_WS_CLIENT_PONG_TIMEOUT_MS)
+#error "IDLE_TIMEOUT should be 0 (disabled, not recommended) or large enough for at least 2 ping/pong rounds even with maximum jitter"
+#endif
+
+/* 检查 IDLE_TIMEOUT 与 PING_INTERVAL 的比例是否合理（至少 2 倍关系，0 表示禁用） */
+#if EZ_WS_CLIENT_IDLE_TIMEOUT_MS > 0 && EZ_WS_CLIENT_IDLE_TIMEOUT_MS < (2 * EZ_WS_CLIENT_PING_INTERVAL_MS)
+#error "IDLE_TIMEOUT should be 0 (disabled, not recommended) or at least 2x PING_INTERVAL"
+#endif
 
 /* 默认重连配置 */
 #ifndef RECONNECT_INTERVAL_MS
@@ -123,6 +160,27 @@ ez_ws_client_now_ms(void)
 	return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
 }
 
+/* 生成带抖动的 ping 间隔（毫秒）
+ * 返回值范围: [PING_INTERVAL_MIN_MS, PING_INTERVAL_MAX_MS]
+ * 如果 PING_INTERVAL_MS = 0，返回 0 表示禁用
+ */
+static uint32_t
+ez_ws_client_get_ping_interval_with_jitter(void)
+{
+#if EZ_WS_CLIENT_PING_INTERVAL_MS == 0
+	/* Ping 功能禁用 */
+	return 0;
+#elif EZ_WS_CLIENT_PING_JITTER_PERCENT == 0
+	/* 抖动禁用，返回固定值 */
+	return EZ_WS_CLIENT_PING_INTERVAL_MS;
+#else
+	/* 生成随机抖动 */
+	uint32_t jitter_range = EZ_WS_CLIENT_PING_JITTER_MS * 2;  /* 总范围 */
+	uint32_t random_offset = (uint32_t)(rand() % (jitter_range + 1));
+	return EZ_WS_CLIENT_PING_INTERVAL_MIN_MS + random_offset;
+#endif
+}
+
 /* WebSocket客户端句柄（完整定义） */
 struct ez_ws_client_handle {
 	/* 配置 */
@@ -194,6 +252,7 @@ struct ez_ws_client_handle {
 	uint64_t last_activity_time_ms;
 	uint64_t last_ping_time_ms;
 	int awaiting_pong;
+	uint32_t current_ping_interval_ms;  /* 当前使用的 ping 间隔（带抖动） */
 };
 
 /* 生成WebSocket握手密钥 */
@@ -537,11 +596,15 @@ static int on_ws_frame_complete(ez_websocket_parser *parser) {
 		
 	case EZ_WS_OPCODE_PING:
 		/* 发送 Pong 响应 */
+		LOG_INFO("Ping received from server (payload: %zu bytes), sending Pong\n", 
+		         ws->current_frame.buffer_size);
 		{
 			if (ez_ws_send_control_frame(ws, EZ_WS_OPCODE_PONG,
 						  ws->current_frame.buffer,
 						  ws->current_frame.buffer_size) < 0) {
 				LOG_WARN("Failed to reply pong, closing connection soon if problem persists\n");
+			} else {
+				LOG_INFO("Pong sent successfully\n");
 			}
 		}
 		break;
@@ -551,6 +614,9 @@ static int on_ws_frame_complete(ez_websocket_parser *parser) {
 		ws->awaiting_pong = 0;
 		{
 			uint64_t now_ms = ez_ws_client_now_ms();
+			uint64_t rtt_ms = now_ms - ws->last_ping_time_ms;
+			LOG_INFO("Pong received from server (RTT: %llu ms)\n", 
+			         (unsigned long long)rtt_ms);
 			ws->last_rx_time_ms = now_ms;
 			ws->last_activity_time_ms = now_ms;
 		}
@@ -696,17 +762,22 @@ static int ez_ws_handle_handshake(struct ez_ws_client_handle *ws) {
 	
 	/* 检查握手是否完成 */
 	if (ws->http_handshake_complete) {
-			ws->state = EZ_WS_STATE_CONNECTED;
-			ws->retry_count = 0;
-			ws->current_retry_delay = ws->config.reconnect_interval_ms;
-			ws->awaiting_pong = 0;
-			{
-				uint64_t now_ms = ez_ws_client_now_ms();
-				ws->last_rx_time_ms = now_ms;
-				ws->last_tx_time_ms = now_ms;
-				ws->last_activity_time_ms = now_ms;
-				ws->last_ping_time_ms = now_ms;
-			}
+		ws->state = EZ_WS_STATE_CONNECTED;
+		ws->retry_count = 0;
+		ws->current_retry_delay = ws->config.reconnect_interval_ms;
+		ws->awaiting_pong = 0;
+#if EZ_WS_CLIENT_PING_INTERVAL_MS > 0
+		ws->current_ping_interval_ms = ez_ws_client_get_ping_interval_with_jitter();
+#else
+		ws->current_ping_interval_ms = 0;  /* Ping 功能已禁用 */
+#endif
+		{
+			uint64_t now_ms = ez_ws_client_now_ms();
+			ws->last_rx_time_ms = now_ms;
+			ws->last_tx_time_ms = now_ms;
+			ws->last_activity_time_ms = now_ms;
+			ws->last_ping_time_ms = now_ms;
+		}
 			
 		LOG_INFO("=== Connection established ===\n");
 			
@@ -1241,44 +1312,70 @@ int ez_ws_service_exec(struct ez_ws_client_handle *ws, int timeout_ms) {
 					ws->interrupted = 1;
 				}
 			}
-		} else if (events[i].data.fd == ws->heartbeat_timerfd) {
-			/* 心跳定时器触发 */
-			uint64_t expirations;
-			read(ws->heartbeat_timerfd, &expirations, sizeof(expirations));
+	} else if (events[i].data.fd == ws->heartbeat_timerfd) {
+		/* 心跳定时器触发 */
+		uint64_t expirations;
+		read(ws->heartbeat_timerfd, &expirations, sizeof(expirations));
+		
+		if (ws->state != EZ_WS_STATE_CONNECTED)
+			continue;
+		
+		/* 检查时间戳是否有效（避免未初始化或刚重置的情况） */
+		if (ws->last_activity_time_ms == 0)
+			continue;
+		
+		uint64_t now_ms = ez_ws_client_now_ms();
+		
+#if EZ_WS_CLIENT_PING_INTERVAL_MS > 0
+		/* 客户端主动 Ping 功能已启用 */
+		if (ws->awaiting_pong) {
+			/* 正在等待 pong 响应，检查是否超时 */
+			if (now_ms - ws->last_ping_time_ms >= EZ_WS_CLIENT_PONG_TIMEOUT_MS) {
+				LOG_WARN("Pong timeout, closing connection\n");
+				ez_ws_client_handle_reset(ws, EZ_WS_RESET_WS | EZ_WS_RESET_HEARTBEAT);
+				ez_ws_schedule_reconnect(ws);
+			}
+		} else {
+			/* 未在等待 pong，检查空闲时间 */
+			uint64_t idle_time_ms = now_ms - ws->last_activity_time_ms;
 			
-			if (ws->state != EZ_WS_STATE_CONNECTED)
-				continue;
-
-			uint64_t now_ms = ez_ws_client_now_ms();
-
-			if (ws->awaiting_pong) {
-				if (now_ms - ws->last_ping_time_ms >= EZ_WS_CLIENT_PONG_TIMEOUT_MS) {
-					LOG_WARN("Pong timeout, closing connection\n");
-					ez_ws_client_handle_reset(ws, EZ_WS_RESET_WS | EZ_WS_RESET_HEARTBEAT);
-					ez_ws_schedule_reconnect(ws);
-					continue;
-				}
-			} else if (now_ms - ws->last_activity_time_ms >= EZ_WS_CLIENT_PING_INTERVAL_MS) {
+			if (idle_time_ms >= EZ_WS_CLIENT_IDLE_TIMEOUT_MS) {
+				/* 空闲时间过长，判定连接失效 */
+				LOG_WARN("Connection idle for %llu ms, closing\n",
+				         (unsigned long long)idle_time_ms);
+				ez_ws_client_handle_reset(ws, EZ_WS_RESET_WS | EZ_WS_RESET_HEARTBEAT);
+				ez_ws_schedule_reconnect(ws);
+			} else if (idle_time_ms >= ws->current_ping_interval_ms) {
+				/* 空闲时间达到 ping 间隔（带抖动），发送 ping */
 				if (ez_ws_send_control_frame(ws, EZ_WS_OPCODE_PING, NULL, 0) == 0) {
 					ws->awaiting_pong = 1;
 					ws->last_ping_time_ms = now_ms;
-					LOG_INFO("Ping sent to server\n");
+					/* 为下一轮生成新的随机间隔 */
+					ws->current_ping_interval_ms = ez_ws_client_get_ping_interval_with_jitter();
+					LOG_INFO("Ping sent to server (next interval: %u ms)\n", 
+					         ws->current_ping_interval_ms);
 				} else {
 					LOG_WARN("Failed to send ping, closing connection\n");
 					ez_ws_client_handle_reset(ws, EZ_WS_RESET_WS | EZ_WS_RESET_HEARTBEAT);
 					ez_ws_schedule_reconnect(ws);
-					continue;
 				}
 			}
-
-			if (now_ms - ws->last_activity_time_ms >= EZ_WS_CLIENT_IDLE_TIMEOUT_MS) {
-				LOG_WARN("Connection idle for %llu ms, closing\n",
-				         (unsigned long long)(now_ms - ws->last_activity_time_ms));
-				ez_ws_client_handle_reset(ws, EZ_WS_RESET_WS | EZ_WS_RESET_HEARTBEAT);
-				ez_ws_schedule_reconnect(ws);
-			}
 		}
+#else
+		/* 客户端主动 Ping 功能已禁用 (PING_INTERVAL_MS = 0) */
+		/* 只检查空闲超时，不主动发送 ping */
+		uint64_t idle_time_ms = now_ms - ws->last_activity_time_ms;
+		
+		if (idle_time_ms >= EZ_WS_CLIENT_IDLE_TIMEOUT_MS) {
+			/* 空闲时间过长，判定连接失效 */
+			LOG_WARN("Connection idle for %llu ms, closing\n",
+			         (unsigned long long)idle_time_ms);
+			ez_ws_client_handle_reset(ws, EZ_WS_RESET_WS | EZ_WS_RESET_HEARTBEAT);
+			ez_ws_schedule_reconnect(ws);
+		}
+#endif
 	}
+}
 	
 	return 0; /* 继续运行 */
 }

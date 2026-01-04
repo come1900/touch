@@ -11,6 +11,7 @@
  *
  * Update:
  *     2011-12-27 20:00:00 WHF Create
+ *     2026-01-04 20:44:49 WHF Improve ping pong mechanism
  */
 /*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 
@@ -21,6 +22,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <time.h>
 
 #include <libwebsockets.h>
 #include <ezutil/ez_system_api.h>
@@ -38,6 +40,49 @@
 
 #ifndef WS_SERVER_PATH_PREFIX
 #define WS_SERVER_PATH_PREFIX "/come"
+#endif
+
+/* ================== 链路保活配置 ================== */
+#define EZ_WS_SERVER_PING_INTERVAL_MS     (30 * 1000)   /* 基础 ping 间隔（最小 1s），0 表示禁用服务端主动 ping */
+// #define EZ_WS_SERVER_PING_INTERVAL_MS     (0 * 1000)   /* 基础 ping 间隔（最小 1s），0 表示禁用服务端主动 ping */
+#define EZ_WS_SERVER_PING_JITTER_PERCENT  10            /* ping 间隔抖动百分比 (0-50)，推荐 10%，0 表示禁用抖动 */
+#define EZ_WS_SERVER_IDLE_TIMEOUT_MS      (180 * 1000)  /* 超过该时间无任何业务流量则判定失效并关闭连接，0 表示禁用（不推荐） */
+// #define EZ_WS_SERVER_IDLE_TIMEOUT_MS      (0 * 1000)  /* 超过该时间无任何业务流量则判定失效并关闭连接，0 表示禁用（不推荐） */
+
+/* 根据 PING_INTERVAL 自动计算派生参数（保持合理比例） */
+#define EZ_WS_SERVER_PING_TIMEOUT_MS      (EZ_WS_SERVER_PING_INTERVAL_MS / 3)   /* 等待 pong 超时 = ping间隔/3 */
+#define EZ_WS_SERVER_TIMER_INTERVAL_MS    (EZ_WS_SERVER_PING_TIMEOUT_MS / 3)    /* 定时器检测周期 = pong超时/3 */
+
+/* Ping 间隔抖动范围计算 */
+#define EZ_WS_SERVER_PING_JITTER_MS \
+	((EZ_WS_SERVER_PING_INTERVAL_MS * EZ_WS_SERVER_PING_JITTER_PERCENT) / 100)
+
+#define EZ_WS_SERVER_PING_INTERVAL_MIN_MS \
+	(EZ_WS_SERVER_PING_INTERVAL_MS - EZ_WS_SERVER_PING_JITTER_MS)
+
+#define EZ_WS_SERVER_PING_INTERVAL_MAX_MS \
+	(EZ_WS_SERVER_PING_INTERVAL_MS + EZ_WS_SERVER_PING_JITTER_MS)
+
+/* 编译时检查：确保手动配置的参数设置合理 */
+
+/* 检查 PING_INTERVAL 是否合理（0 表示禁用，非 0 时最小 1 秒） */
+#if EZ_WS_SERVER_PING_INTERVAL_MS > 0 && EZ_WS_SERVER_PING_INTERVAL_MS < 1000
+#error "PING_INTERVAL should be 0 (disabled) or at least 1000ms (1 second)"
+#endif
+
+/* 检查 JITTER 百分比范围 (0-50%) */
+#if EZ_WS_SERVER_PING_JITTER_PERCENT < 0 || EZ_WS_SERVER_PING_JITTER_PERCENT > 50
+#error "PING_JITTER_PERCENT should be between 0 and 50 (0% to 50%)"
+#endif
+
+/* 检查 IDLE_TIMEOUT 是否足够大，考虑最大抖动情况（0 表示禁用，跳过检查） */
+#if EZ_WS_SERVER_IDLE_TIMEOUT_MS > 0 && EZ_WS_SERVER_IDLE_TIMEOUT_MS <= (2 * EZ_WS_SERVER_PING_INTERVAL_MAX_MS + EZ_WS_SERVER_PING_TIMEOUT_MS)
+#error "IDLE_TIMEOUT should be 0 (disabled, not recommended) or large enough for at least 2 ping/pong rounds even with maximum jitter"
+#endif
+
+/* 检查 IDLE_TIMEOUT 与 PING_INTERVAL 的比例是否合理（至少 2 倍关系，0 表示禁用） */
+#if EZ_WS_SERVER_IDLE_TIMEOUT_MS > 0 && EZ_WS_SERVER_IDLE_TIMEOUT_MS < (2 * EZ_WS_SERVER_PING_INTERVAL_MS)
+#error "IDLE_TIMEOUT should be 0 (disabled, not recommended) or at least 2x PING_INTERVAL"
 #endif
 
 /* Console句柄 - 作为websocket的外部使用方 */
@@ -110,6 +155,14 @@ static void ws_server_on_receive(int client_id, const void *data, size_t len, in
     }
 }
 
+/* 获取当前时间（毫秒） */
+static uint64_t get_now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+
 /* 客户端列表打印回调函数 */
 struct list_client_context {
     int index;
@@ -119,8 +172,19 @@ static int print_client_callback(const struct ez_ws_client_info *info, void *use
     struct list_client_context *ctx = (struct list_client_context *)user_data;
     time_t now = time(NULL);
     int duration = (int)(now - info->connect_time);
-    lwsl_user("  [%d] ID=%d, IP=%s:%d, Connected=%ds ago\n", 
-              ctx->index++, info->id, info->ip, info->port, duration);
+    
+    /* 计算 idle 时长（没有任何数据交互的时长） */
+    uint64_t idle_ms = 0;
+    if (info->last_activity_ms > 0) {
+        uint64_t now_ms = get_now_ms();
+        if (now_ms >= info->last_activity_ms) {
+            idle_ms = now_ms - info->last_activity_ms;
+        }
+    }
+    
+    lwsl_user("  [%d] ID=%d, IP=%s:%d, Connected=%ds ago, Idle=%llums\n", 
+              ctx->index++, info->id, info->ip, info->port, duration,
+              (unsigned long long)idle_ms);
     return 0;  /* 继续遍历 */
 }
 
@@ -382,6 +446,24 @@ int main(int argc, const char **argv)
 	config.protocol = WS_SERVER_PROTOCOL;  /* 默认协议名称 */
 	config.path_prefix = WS_SERVER_PATH_PREFIX;  /* 默认路径前缀 */
 	config.options = 0;
+	
+	/* 配置保活参数 - 主动管理连接资源 */
+	config.idle_timeout_ms = EZ_WS_SERVER_IDLE_TIMEOUT_MS;      /* 空闲连接超时（始终有效） */
+	
+#if EZ_WS_SERVER_PING_INTERVAL_MS > 0
+	/* 启用服务端主动 Ping 功能 */
+	config.timer_interval_ms = EZ_WS_SERVER_TIMER_INTERVAL_MS;  /* 定时器检测周期 */
+	config.ping_interval_ms = EZ_WS_SERVER_PING_INTERVAL_MS;    /* 心跳间隔（基础值） */
+	config.ping_timeout_ms = EZ_WS_SERVER_PING_TIMEOUT_MS;      /* Pong 响应超时 */
+	config.ping_jitter_percent = EZ_WS_SERVER_PING_JITTER_PERCENT; /* Ping 间隔抖动百分比 */
+#else
+	/* 禁用服务端主动 Ping 功能 */
+	config.timer_interval_ms = 0;       /* 不需要定时器 */
+	config.ping_interval_ms = 0;        /* 禁用主动 ping */
+	config.ping_timeout_ms = 0;         /* 不需要 pong 超时检测 */
+	config.ping_jitter_percent = 0;     /* 不需要抖动 */
+	// config.idle_timeout_ms = EZ_WS_SERVER_IDLE_TIMEOUT_MS;  /* 空闲连接超时，0 表示禁用（不推荐） */
+#endif
 
 	if ((p = lws_cmdline_option(argc, argv, "-p")))
 		config.port = atoi(p);
@@ -391,6 +473,21 @@ int main(int argc, const char **argv)
 		config.options |= 1;
 
 	lwsl_user("Server listening on port %d\n", config.port);
+	lwsl_user("Server keepalive config:\n");
+#if EZ_WS_SERVER_PING_INTERVAL_MS > 0
+	lwsl_user("  - Timer interval: %u ms\n", config.timer_interval_ms);
+	lwsl_user("  - Ping interval:  %u ms (send ping after idle, jitter: ±%u%%)\n", 
+	          config.ping_interval_ms, config.ping_jitter_percent);
+	lwsl_user("  - Pong timeout:   %u ms (close if no pong)\n", config.ping_timeout_ms);
+#else
+	lwsl_user("  - Server ping:    DISABLED (PING_INTERVAL_MS = 0)\n");
+	lwsl_user("  - Note: Server will only respond to client pings, not send its own\n");
+#endif
+#if EZ_WS_SERVER_IDLE_TIMEOUT_MS > 0
+	lwsl_user("  - Idle timeout:   %u ms (close if no activity)\n", config.idle_timeout_ms);
+#else
+	lwsl_user("  - Idle timeout:   DISABLED (not recommended, connections never timeout)\n");
+#endif
 
 	/* 3. 注册信号处理 */
 	signal(SIGINT, sigint_handler);

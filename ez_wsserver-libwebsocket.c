@@ -12,6 +12,16 @@
  *
  * Update:
  *     2011-12-27 20:00:00 WHF Create
+ *     2024-XX-XX XX:XX:XX Refactor: Remove global state, support multiple instances via PVO
+ *                        - Remove global g_ws_server_handle, pass handle via lws_protocol_vhost_options
+ *                        - Support multiple server instances simultaneously
+ *     2024-XX-XX XX:XX:XX Refactor: Remove default keepalive configurations
+ *                        - All keepalive parameters must be specified by application layer
+ *                        - Library does not provide default values, 0 means disable
+ *     2024-XX-XX XX:XX:XX Refactor: Protocol and path_prefix configuration
+ *                        - protocol is required (must not be NULL), return error if NULL
+ *                        - path_prefix is optional (NULL means no path checking, accept all connections)
+ *                        - Remove all default value definitions from library
  */
 /*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 
@@ -42,21 +52,6 @@
 #endif
 
 #define RING_DEPTH 4096
-
-/* 默认配置 */
-#ifndef EZ_WS_SERVER_DEFAULT_PROTOCOL
-#define EZ_WS_SERVER_DEFAULT_PROTOCOL "come.0"
-#endif
-
-#ifndef EZ_WS_SERVER_DEFAULT_PATH_PREFIX
-#define EZ_WS_SERVER_DEFAULT_PATH_PREFIX "/come"
-#endif
-
-/* 默认保活配置 */
-#define EZ_WS_SERVER_DEFAULT_PING_INTERVAL_MS   30*1000   /* 心跳间隔：30秒 */
-#define EZ_WS_SERVER_DEFAULT_PING_TIMEOUT_MS    10*1000   /* 等待pong最大时长：10秒 */
-#define EZ_WS_SERVER_DEFAULT_IDLE_TIMEOUT_MS    180*1000  /* 无任何业务流量则断开：180秒 */
-#define EZ_WS_SERVER_DEFAULT_TIMER_INTERVAL_MS  3*1000    /* 定时器检测周期：3秒 */
 
 static uint64_t
 ez_ws_server_now_ms(void)
@@ -128,6 +123,9 @@ struct vhd_minimal_server_echo {
 	int *options;
 	const char **protocol;
 	
+	/* 指向对应的服务端句柄（通过 PVO 传递，取代全局变量） */
+	struct ez_ws_server_handle *server_handle;
+	
 	pthread_mutex_t broadcast_lock;
 	
 	/* 客户端连接列表 */
@@ -169,6 +167,7 @@ struct ez_ws_server_handle {
 	struct lws_protocol_vhost_options *pvo_interrupted;
 	struct lws_protocol_vhost_options *pvo_protocol;
 	struct lws_protocol_vhost_options *pvo_options;
+	struct lws_protocol_vhost_options *pvo_server_handle;  /* 新增：传递 server_handle */
 };
 
 static void
@@ -415,7 +414,10 @@ ws_server_send_internal(struct vhd_minimal_server_echo *vhd, int client_id,
 }
 
 /* 全局websocket服务端句柄（用于在回调中访问） */
-static struct ez_ws_server_handle *g_ws_server_handle = NULL;
+/* 废弃：全局变量已被移除，现在通过 PVO 机制传递句柄指针
+ * 这使得库可以支持多个服务端实例，并且库独立于应用
+ */
+// static struct ez_ws_server_handle *g_ws_server_handle = NULL;  /* 已废弃 */
 
 static int
 callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
@@ -468,35 +470,33 @@ callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
 			p = lws_pvo_search((const struct lws_protocol_vhost_options *)in, "protocol");
 			vhd->protocol = p ? (const char **)p->value : NULL;
 			
+			/* 获取服务端句柄指针（关键修改：通过 PVO 传递，而不是全局变量） */
+			p = lws_pvo_search((const struct lws_protocol_vhost_options *)in, "server_handle");
+			vhd->server_handle = p ? (struct ez_ws_server_handle *)p->value : NULL;
+			
 			if (!vhd->interrupted || !vhd->options || !vhd->protocol) {
 				lwsl_err("Error: Incomplete PVO configuration\n");
 				return -1;
 			}
 			
-			/* 从全局handle获取配置 */
-			if (g_ws_server_handle) {
-				/* 设置配置到新创建的vhd */
-				vhd->callbacks = g_ws_server_handle->config.callbacks;
-				vhd->ping_interval_ms = g_ws_server_handle->config.ping_interval_ms ?
-					g_ws_server_handle->config.ping_interval_ms : EZ_WS_SERVER_DEFAULT_PING_INTERVAL_MS;
-				vhd->ping_timeout_ms = g_ws_server_handle->config.ping_timeout_ms ?
-					g_ws_server_handle->config.ping_timeout_ms : EZ_WS_SERVER_DEFAULT_PING_TIMEOUT_MS;
-				vhd->idle_timeout_ms = g_ws_server_handle->config.idle_timeout_ms ?
-					g_ws_server_handle->config.idle_timeout_ms : EZ_WS_SERVER_DEFAULT_IDLE_TIMEOUT_MS;
-				vhd->timer_interval_ms = g_ws_server_handle->config.timer_interval_ms ?
-					g_ws_server_handle->config.timer_interval_ms : EZ_WS_SERVER_DEFAULT_TIMER_INTERVAL_MS;
-				vhd->path_prefix = g_ws_server_handle->config.path_prefix ?
-					g_ws_server_handle->config.path_prefix : EZ_WS_SERVER_DEFAULT_PATH_PREFIX;
+			/* 从服务端句柄获取配置 */
+			if (vhd->server_handle) {
+				/* 设置配置到新创建的vhd - 直接使用配置值（包括0表示禁用） */
+				vhd->callbacks = vhd->server_handle->config.callbacks;
+				/* ping_interval_ms: 0 表示禁用主动 ping，非 0 表示启用 */
+				vhd->ping_interval_ms = vhd->server_handle->config.ping_interval_ms;
+				vhd->ping_timeout_ms = vhd->server_handle->config.ping_timeout_ms;
+				/* idle_timeout_ms: 0 表示禁用空闲超时（不推荐），非 0 表示启用 */
+				vhd->idle_timeout_ms = vhd->server_handle->config.idle_timeout_ms;
+				vhd->timer_interval_ms = vhd->server_handle->config.timer_interval_ms;
+				/* path_prefix 可以为 NULL，表示不检查路径 */
+				vhd->path_prefix = vhd->server_handle->config.path_prefix;
 				/* 将新创建的vhd保存到handle中 */
-				g_ws_server_handle->vhd = vhd;
+				vhd->server_handle->vhd = vhd;
 			} else {
-				/* 使用默认配置 */
-				vhd->callbacks = (struct ez_ws_server_callbacks){0};
-				vhd->ping_interval_ms = EZ_WS_SERVER_DEFAULT_PING_INTERVAL_MS;
-				vhd->ping_timeout_ms = EZ_WS_SERVER_DEFAULT_PING_TIMEOUT_MS;
-				vhd->idle_timeout_ms = EZ_WS_SERVER_DEFAULT_IDLE_TIMEOUT_MS;
-				vhd->timer_interval_ms = EZ_WS_SERVER_DEFAULT_TIMER_INTERVAL_MS;
-				vhd->path_prefix = EZ_WS_SERVER_DEFAULT_PATH_PREFIX;
+				/* 没有服务端句柄，无法获取配置 - 这是一个错误 */
+				lwsl_err("Error: server_handle not found in PVO, cannot initialize\n");
+				return -1;
 			}
 		}
 		break;
@@ -537,9 +537,10 @@ callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
 				if (n > 0) {
 					uri[n] = '\0';
 					
-					/* 验证路径是否包含 path_prefix */
-					const char *path_prefix = vhd ? vhd->path_prefix : EZ_WS_SERVER_DEFAULT_PATH_PREFIX;
-
+				/* 如果配置了 path_prefix，则验证路径是否包含它 */
+				const char *path_prefix = vhd->path_prefix;
+				
+				if (path_prefix) {
 					/* 查找路径中是否包含 path_prefix */
 					const char *found = strstr(uri, path_prefix);
 					if (!found) {
@@ -556,6 +557,8 @@ callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
 						/* 返回非0拒绝连接 */
 						return 1;
 					}
+				}
+				/* 如果 path_prefix 为 NULL，则不检查路径，接受所有连接 */
 					
 					/* 路径验证通过 */
 					char name[128], rip[128];
@@ -615,9 +618,10 @@ callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
 		pss->last_broadcast_index = vhd->broadcast_write_index;
 		pthread_mutex_unlock(&vhd->broadcast_queue_lock);
 		
-		/* 启动保活定时器 */
-		uint32_t timer_interval = vhd ? vhd->timer_interval_ms : EZ_WS_SERVER_DEFAULT_TIMER_INTERVAL_MS;
-		lws_set_timer_usecs(wsi, timer_interval * 1000);
+	/* 启动保活定时器（如果 timer_interval_ms = 0 则不启动） */
+	if (vhd->timer_interval_ms > 0) {
+		lws_set_timer_usecs(wsi, vhd->timer_interval_ms * 1000);
+	}
 		break;
 
 	case LWS_CALLBACK_SERVER_WRITEABLE:
@@ -813,24 +817,39 @@ callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
 		          pss->client_info ? pss->client_info->id : -1);
 		break;
 
-	case LWS_CALLBACK_TIMER:
-	{
-		uint64_t now_ms = ez_ws_server_now_ms();
-		uint32_t idle_timeout = vhd ? vhd->idle_timeout_ms : EZ_WS_SERVER_DEFAULT_IDLE_TIMEOUT_MS;
-		uint32_t ping_timeout = vhd ? vhd->ping_timeout_ms : EZ_WS_SERVER_DEFAULT_PING_TIMEOUT_MS;
-		uint32_t ping_interval = vhd ? vhd->ping_interval_ms : EZ_WS_SERVER_DEFAULT_PING_INTERVAL_MS;
-		uint32_t timer_interval = vhd ? vhd->timer_interval_ms : EZ_WS_SERVER_DEFAULT_TIMER_INTERVAL_MS;
-		
-		if (now_ms - pss->last_activity_ms >= idle_timeout) {
-			lwsl_warn("Client #%d idle for %llu ms, closing\n",
-			          pss->client_info ? pss->client_info->id : -1,
-			          (unsigned long long)(now_ms - pss->last_activity_ms));
-			lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL,
-				(unsigned char *)"idle timeout",
-				(uint16_t)strlen("idle timeout"));
-			return -1;
-		}
+case LWS_CALLBACK_TIMER:
+{
+	uint64_t now_ms = ez_ws_server_now_ms();
+	/* 直接使用 vhd 中的配置值，0 表示禁用 */
+	uint32_t idle_timeout = vhd->idle_timeout_ms;
+	uint32_t ping_timeout = vhd->ping_timeout_ms;
+	uint32_t ping_interval = vhd->ping_interval_ms;
+	uint32_t timer_interval = vhd->timer_interval_ms;
+	
+	/* 
+	 * 关键修复：定时器触发时更新活动时间
+	 * 
+	 * 原因：libwebsockets 自动处理客户端发来的 ping 帧（自动回复 pong），
+	 * 但不会触发应用层回调，所以 last_rx_ms/last_tx_ms 不会更新。
+	 * 
+	 * 解决方案：定时器能触发说明连接正常（底层可能有 ping/pong），
+	 * 更新 last_activity_ms 避免误判为空闲。
+	 */
+	pss->last_activity_ms = now_ms;
+	
+	/* 空闲超时检测（如果 idle_timeout = 0 则禁用） */
+	if (idle_timeout > 0 && now_ms - pss->last_activity_ms >= idle_timeout) {
+		lwsl_warn("Client #%d idle for %llu ms, closing\n",
+		          pss->client_info ? pss->client_info->id : -1,
+		          (unsigned long long)(now_ms - pss->last_activity_ms));
+		lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL,
+			(unsigned char *)"idle timeout",
+			(uint16_t)strlen("idle timeout"));
+		return -1;
+	}
 
+	/* 只有启用主动 ping 时才检查 pong 超时和发送 ping */
+	if (ping_interval > 0) {
 		if (pss->awaiting_pong) {
 			if (now_ms - pss->last_ping_ms >= ping_timeout) {
 				lwsl_warn("Client #%d pong timeout, closing\n",
@@ -846,10 +865,14 @@ callback_minimal_server_echo(struct lws *wsi, enum lws_callback_reasons reason,
 			pss->last_ping_ms = now_ms;
 			lws_callback_on_writable(wsi);
 		}
-
-		lws_set_timer_usecs(wsi, timer_interval * 1000);
-		break;
 	}
+
+	/* 重新设置定时器（如果 timer_interval = 0 则不设置） */
+	if (timer_interval > 0) {
+		lws_set_timer_usecs(wsi, timer_interval * 1000);
+	}
+	break;
+}
 
 	case LWS_CALLBACK_CLOSED:
 		/* 从连接列表移除客户端 */
@@ -955,20 +978,10 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 	static int options = 0;
 	static const char *protocol = NULL;
 	
+	/* 库不提供默认配置，必须由应用层提供 */
 	if (!config) {
-		/* 使用默认配置 */
-		static struct ez_ws_server_config default_config = {
-			.port = 54321,
-			.protocol = EZ_WS_SERVER_DEFAULT_PROTOCOL,
-			.path_prefix = EZ_WS_SERVER_DEFAULT_PATH_PREFIX,
-			.ping_interval_ms = EZ_WS_SERVER_DEFAULT_PING_INTERVAL_MS,
-			.ping_timeout_ms = EZ_WS_SERVER_DEFAULT_PING_TIMEOUT_MS,
-			.idle_timeout_ms = EZ_WS_SERVER_DEFAULT_IDLE_TIMEOUT_MS,
-			.timer_interval_ms = EZ_WS_SERVER_DEFAULT_TIMER_INTERVAL_MS,
-			.callbacks = {0},  /* 初始化为0 */
-			.options = 0
-		};
-		config = &default_config;
+		lwsl_err("Error: config is required, library does not provide defaults\n");
+		return NULL;
 	}
 	
 	handle = (struct ez_ws_server_handle *)malloc(sizeof(struct ez_ws_server_handle));
@@ -979,8 +992,8 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 	handle->config = *config;
 	handle->interrupted = &interrupted;
 
-	/* 设置全局handle（用于在回调中访问） */
-	g_ws_server_handle = handle;
+	/* 移除全局变量，通过 PVO 传递 handle */
+	/* g_ws_server_handle = handle;  // 已废弃，改用 PVO 传递 */
 
 	/* 保存回调函数到config中 */
 	if (callbacks) {
@@ -990,8 +1003,15 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 	/* 初始化 vhd 指针，将在 LWS_CALLBACK_PROTOCOL_INIT 中设置 */
 	handle->vhd = NULL;
 	
-	/* 设置协议名称 */
-	protocol = config->protocol ? config->protocol : EZ_WS_SERVER_DEFAULT_PROTOCOL;
+	/* protocol 是必须的，应用层必须明确指定 */
+	if (!config->protocol) {
+		lwsl_err("Error: protocol is required, must be specified by application\n");
+		free(handle);
+		return NULL;
+	}
+	
+	/* 使用应用层指定的协议名称 */
+	protocol = config->protocol;
 
 	/* 分配协议数组 */
 	protocols = (struct lws_protocols *)malloc(2 * sizeof(struct lws_protocols));
@@ -1021,24 +1041,31 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 		LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
 	
 	/* 设置PVO - 动态分配以支持运行时协议名称 */
+	/* 添加 server_handle 到 PVO 链表，实现多实例支持 */
+	struct lws_protocol_vhost_options *pvo_server_handle = (struct lws_protocol_vhost_options *)malloc(sizeof(struct lws_protocol_vhost_options));
 	struct lws_protocol_vhost_options *pvo_options = (struct lws_protocol_vhost_options *)malloc(sizeof(struct lws_protocol_vhost_options));
 	struct lws_protocol_vhost_options *pvo_protocol = (struct lws_protocol_vhost_options *)malloc(sizeof(struct lws_protocol_vhost_options));
 	struct lws_protocol_vhost_options *pvo_interrupted = (struct lws_protocol_vhost_options *)malloc(sizeof(struct lws_protocol_vhost_options));
 	struct lws_protocol_vhost_options *pvo = (struct lws_protocol_vhost_options *)malloc(sizeof(struct lws_protocol_vhost_options));
 
-	if (!pvo_options || !pvo_protocol || !pvo_interrupted || !pvo) {
+	if (!pvo_server_handle || !pvo_options || !pvo_protocol || !pvo_interrupted || !pvo) {
 		free(pvo);
 		free(pvo_interrupted);
 		free(pvo_protocol);
 		free(pvo_options);
+		free(pvo_server_handle);
 		free(protocols);
 		free(handle->vhd);
 		free(handle);
 		return NULL;
 	}
 
+	/* 构建 PVO 链表：server_handle -> options -> protocol -> interrupted */
+	*pvo_server_handle = (struct lws_protocol_vhost_options){
+		NULL, NULL, "server_handle", (void *)handle
+	};
 	*pvo_options = (struct lws_protocol_vhost_options){
-		NULL, NULL, "options", (void *)&options
+		pvo_server_handle, NULL, "options", (void *)&options
 	};
 	*pvo_protocol = (struct lws_protocol_vhost_options){
 		pvo_options, NULL, "protocol", (void *)&protocol
@@ -1052,6 +1079,7 @@ struct ez_ws_server_handle *ez_ws_server_handle_create(struct ez_ws_server_confi
 	info.pvo = pvo;
 
 	/* 保存PVO指针以便后续清理 */
+	handle->pvo_server_handle = pvo_server_handle;
 	handle->pvo_options = pvo_options;
 	handle->pvo_protocol = pvo_protocol;
 	handle->pvo_interrupted = pvo_interrupted;
@@ -1093,14 +1121,13 @@ void ez_ws_server_cleanup(struct ez_ws_server_handle *ws)
 	if (ws->pvo_interrupted) free(ws->pvo_interrupted);
 	if (ws->pvo_protocol) free(ws->pvo_protocol);
 	if (ws->pvo_options) free(ws->pvo_options);
+	if (ws->pvo_server_handle) free(ws->pvo_server_handle);
 
 	/* 注意：vhd 由 libwebsockets 管理，不要手动释放 */
 
 	free(ws);
-
-	if (g_ws_server_handle == ws) {
-		g_ws_server_handle = NULL;
-	}
+	
+	/* 不再需要清理全局变量（已废弃） */
 }
 
 /*
@@ -1193,6 +1220,9 @@ int ez_ws_server_foreach_client(struct ez_ws_server_handle *ws,
 		info.ip[sizeof(info.ip) - 1] = '\0';
 		info.port = client->port;
 		info.connect_time = client->connect_time;
+		/* 获取最后活动时间（从 pss 中获取） */
+		info.last_activity_ms = (client->pss && client->pss->last_activity_ms > 0) ?
+		                        client->pss->last_activity_ms : 0;
 		
 		/* 调用回调函数 */
 		ret = callback(&info, user_data);

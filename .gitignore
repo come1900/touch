@@ -12,6 +12,16 @@ touch-svr
 touch-cli-*
 touch-svr-*
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+pytouch/__pycache__/
+pytouch/*.pyc
+pytouch/*.pyo
+pytouch/*.pyd
+
 # Temporary files
 *~
 *.tmp

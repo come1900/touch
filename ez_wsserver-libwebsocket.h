@@ -51,14 +51,15 @@ struct ez_ws_server_callbacks {
 struct ez_ws_server_config {
 	/* 连接配置 */
 	int port;                      /* 监听端口 */
-	const char *protocol;          /* WebSocket 子协议名称 */
-	const char *path_prefix;       /* URL 路径前缀（如 "/come"） */
+	const char *protocol;          /* WebSocket 子协议名称（必须指定，不能为 NULL） */
+	const char *path_prefix;       /* URL 路径前缀（如 "/come"），NULL 表示不检查路径，接受所有连接 */
 
-	/* 保活配置（可选，使用默认值如果为0） */
-	uint32_t ping_interval_ms;    /* 心跳间隔（毫秒），0表示使用默认值30秒 */
-	uint32_t ping_timeout_ms;      /* 等待pong最大时长（毫秒），0表示使用默认值10秒 */
-	uint32_t idle_timeout_ms;      /* 无业务流量断开时间（毫秒），0表示使用默认值180秒 */
-	uint32_t timer_interval_ms;    /* 定时器检测周期（毫秒），0表示使用默认值3秒 */
+	/* 保活配置（所有配置由应用层控制，库不提供默认值） */
+	uint32_t ping_interval_ms;     /* 心跳间隔（毫秒），0 表示禁用服务端主动 ping */
+	uint32_t ping_timeout_ms;      /* 等待 pong 最大时长（毫秒），0 表示禁用 pong 超时检测 */
+	uint32_t idle_timeout_ms;      /* 无业务流量断开时间（毫秒），0 表示禁用空闲超时（不推荐） */
+	uint32_t timer_interval_ms;    /* 定时器检测周期（毫秒），0 表示禁用定时器 */
+	uint32_t ping_jitter_percent;  /* ping 间隔抖动百分比（0-50），0 表示禁用抖动，推荐 10% */
 
 	/* 回调函数（内部使用） */
 	struct ez_ws_server_callbacks callbacks;
@@ -139,6 +140,7 @@ struct ez_ws_client_info {
 	char ip[64];         /* 客户端IP地址 */
 	int port;            /* 客户端端口 */
 	time_t connect_time; /* 连接时间戳 */
+	uint64_t last_activity_ms; /* 最后活动时间（毫秒），0 表示未初始化 */
 };
 
 /**

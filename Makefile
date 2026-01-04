@@ -10,17 +10,15 @@ PLATFORM = linux
 
 #PLATFORM = linux-mipsel-openwrt-linux
 
-include         ../lazaru/Makefile.Defines/Makefile.Defines.$(PLATFORM)
+include         ../../library/Makefile.Defines/Makefile.Defines.$(PLATFORM)
 
-# include         ../../this.def
 
-CFLAGS += -Wall
+CFLAGS += -Wall 
 CFLAGS +=  -O2
 CFLAGS +=  -g -std=c99
 CFLAGS += -D_POSIX_C_SOURCE=200809L
 
 CFLAGS += -I$(HOME)/libs/libwebsockets-$(PLATFORM)/include/
-# LIBS   += -L$(HOME)/libs/$(theName)-$(PLATFORM)/lib -l${theLibName}
 
 # use static libs
 LIBS   += $(HOME)/libs/libwebsockets-$(PLATFORM)/lib/libwebsockets.a
@@ -36,7 +34,6 @@ LIBS   += -L$(HOME)/libs/lib -lezutil-$(PLATFORM)
 #endif
 
 LIBS += -lm -lpthread
-#LIBS += -liconv
 
 #CPPFLAGS += -std=c++11
 CPPFLAGS += $(CFLAGS)
@@ -87,7 +84,3 @@ test: ut-ez_websocket_parser
 dbg:
 	scp $(PROGS) $(CPP_OBJ) $(C_OBJ) root@10.229.164.21:/home/fsw/.whf
 	scp $(PROGS) $(CPP_OBJ) $(C_OBJ) root@10.57.147.45:/home/fsw/.whf
-
-# 显示当前编译的目标平台
-platform:
-	@echo "Building for platform: $(PLATFORM)"
