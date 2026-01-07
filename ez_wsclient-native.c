@@ -16,6 +16,11 @@
  */
 /*-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-*/
 
+/* 定义特性测试宏以使用 getrandom() 系统调用（Linux 3.17+） */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -27,6 +32,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/epoll.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <time.h>
@@ -245,7 +251,7 @@ struct ez_ws_client_handle {
 	
 	/* 线程 */
 	pthread_t ws_thread;
-	int ws_running;
+	int ready;
 
 	uint64_t last_rx_time_ms;
 	uint64_t last_tx_time_ms;
@@ -458,14 +464,19 @@ static int create_ws_frame(const uint8_t *payload, size_t payload_len,
 	}
 	
 	/* 生成masking key */
+	/* RFC 6455 Section 5.3: The masking key is a 32-bit value chosen at random by the client.
+	 * The masking key MUST be unpredictably random (unpredictable).
+	 */
 	uint8_t masking_key[4];
-	FILE *urandom = fopen("/dev/urandom", "rb");
-	if (urandom) {
-		fread(masking_key, 1, 4, urandom);
-		fclose(urandom);
-	} else {
+	
+	/* 方案1：使用 getrandom() 系统调用（Linux 3.17+，更高效） */
+	ssize_t ret = getrandom(masking_key, sizeof(masking_key), GRND_NONBLOCK);
+	if (ret != sizeof(masking_key)) {
+		/* 方案2：getrandom() 失败，使用 time + pid + rand 组合 */
 		time_t t = time(NULL);
-		memcpy(masking_key, &t, 4);
+		pid_t pid = getpid();
+		uint32_t combined = (uint32_t)(t ^ (pid << 16) ^ ((uint32_t)rand()));
+		memcpy(masking_key, &combined, 4);
 	}
 	
 	memcpy(frame + pos, masking_key, 4);
@@ -497,13 +508,10 @@ static int on_ws_frame_begin(ez_websocket_parser *parser) {
 	ws->current_frame.is_binary = (parser->opcode == EZ_WS_OPCODE_BINARY);
 	ws->current_frame.buffer_size = 0;
 	ws->current_frame.buffer_cap = 65536;
-	ws->current_frame.buffer = malloc(ws->current_frame.buffer_cap);
+	ws->current_frame.buffer = calloc(1, ws->current_frame.buffer_cap);
 	if (!ws->current_frame.buffer) {
 		return -1;
 	}
-	
-	/* 确保缓冲区初始化为0，避免旧数据残留 */
-	memset(ws->current_frame.buffer, 0, ws->current_frame.buffer_cap);
 	
 	return 0;
 }
@@ -636,7 +644,7 @@ static int on_ws_frame_complete(ez_websocket_parser *parser) {
 /* 连接到服务器 */
 static int ez_ws_connect(struct ez_ws_client_handle *ws) {
 	/* 如果已中断，不尝试连接 */
-	if (ws->interrupted || !ws->ws_running) {
+	if (ws->interrupted || !ws->ready) {
 		return -1;
 	}
 	
@@ -660,7 +668,7 @@ static int ez_ws_connect(struct ez_ws_client_handle *ws) {
 	
 	for (rp = result; rp != NULL; rp = rp->ai_next) {
 		/* 再次检查中断标志 */
-		if (ws->interrupted || !ws->ws_running) {
+		if (ws->interrupted || !ws->ready) {
 			freeaddrinfo(result);
 			return -1;
 		}
@@ -744,15 +752,16 @@ static int ez_ws_handle_handshake(struct ez_ws_client_handle *ws) {
 		return -1;
 	}
 	
-	/* 使用 http_parser 解析新接收的数据 */
-	size_t old_len = ws->handshake_response_len;
+	/* 使用 http_parser 解析响应数据 */
+	/* 注意：http_parser 支持增量解析，但需要从缓冲区开头开始解析 */
+	/* 因为解析器内部会跟踪已解析的位置 */
 	ws->handshake_response_len += n;
 	ws->handshake_response[ws->handshake_response_len] = '\0';
 	
-	/* 只解析新接收的数据部分 */
+	/* 从缓冲区开头解析所有数据（http_parser 内部会跟踪已解析的位置） */
 	(void)http_parser_execute(&ws->http_parser, &ws->http_parser_settings,
-	                         ws->handshake_response + old_len,
-	                         n);
+	                         ws->handshake_response,
+	                         ws->handshake_response_len);
 	
 	if (HTTP_PARSER_ERRNO(&ws->http_parser) != HPE_OK) {
 		LOG_ERROR("WebSocket handshake failed: HTTP parse error: %s\n",
@@ -1134,7 +1143,7 @@ int ez_ws_service_exec(struct ez_ws_client_handle *ws, int timeout_ms) {
 		return -1;
 	
 	/* 检查是否应该停止 */
-	if (!ws->ws_running || ws->interrupted) {
+	if (!ws->ready || ws->interrupted) {
 		return -1;
 	}
 	
@@ -1145,6 +1154,9 @@ int ez_ws_service_exec(struct ez_ws_client_handle *ws, int timeout_ms) {
 		if (ez_ws_connect(ws) < 0) {
 			/* 连接失败，启动重连定时器 */
 			if (ws->reconnect_timerfd >= 0 && !ws->interrupted) {
+				/* 首次连接失败后，增加 retry_count 以便后续重连能正确应用退步策略 */
+				ws->retry_count++;
+				/* 首次失败后使用初始延迟，后续重连会应用退步策略 */
 				update_timerfd(ws->reconnect_timerfd, ws->current_retry_delay);
 			}
 		}
@@ -1285,7 +1297,7 @@ int ez_ws_service_exec(struct ez_ws_client_handle *ws, int timeout_ms) {
 			read(ws->reconnect_timerfd, &expirations, sizeof(expirations));
 			
 			/* 如果已中断，立即停止重连 */
-			if (ws->interrupted || !ws->ws_running) {
+			if (ws->interrupted || !ws->ready) {
 				struct itimerspec timer_spec = {0};
 				timerfd_settime(ws->reconnect_timerfd, 0, &timer_spec, NULL);
 				continue;
@@ -1524,13 +1536,20 @@ struct ez_ws_client_handle *ez_ws_client_handle_create(struct ez_ws_client_confi
 		return NULL;
 	}
 	
-	/* 创建重连定时器 */
-	ws->reconnect_timerfd = create_timerfd(ws->config.reconnect_interval_ms);
+	/* 创建重连定时器（初始时不启动，等待连接失败后再启动） */
+	ws->reconnect_timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 	if (ws->reconnect_timerfd >= 0) {
-		struct epoll_event ev;
-		ev.events = EPOLLIN;
-		ev.data.fd = ws->reconnect_timerfd;
-		epoll_ctl(ws->epollfd, EPOLL_CTL_ADD, ws->reconnect_timerfd, &ev);
+		/* 初始时定时器不启动（it_value 设为 0） */
+		struct itimerspec timer_spec = {0};
+		if (timerfd_settime(ws->reconnect_timerfd, 0, &timer_spec, NULL) < 0) {
+			close(ws->reconnect_timerfd);
+			ws->reconnect_timerfd = -1;
+		} else {
+			struct epoll_event ev;
+			ev.events = EPOLLIN;
+			ev.data.fd = ws->reconnect_timerfd;
+			epoll_ctl(ws->epollfd, EPOLL_CTL_ADD, ws->reconnect_timerfd, &ev);
+		}
 	}
 	
 	/* 创建心跳定时器 */
@@ -1556,7 +1575,7 @@ struct ez_ws_client_handle *ez_ws_client_handle_create(struct ez_ws_client_confi
 	ws->handshake_response_len = 0;
 	
 	/* 设置运行标志 */
-	ws->ws_running = 1;
+	ws->ready = 1;
 	ws->interrupted = 0;
 	
 	/* 注意：连接操作将在 ez_ws_service_exec 中执行，避免创建句柄时阻塞 */
@@ -1581,7 +1600,7 @@ void ez_ws_client_cleanup(struct ez_ws_client_handle *ws) {
 	
 	/* 设置中断标志 */
 	ws->interrupted = 1;
-	ws->ws_running = 0;
+	ws->ready = 0;
 	
 	/* 关闭 socket 以立即唤醒 epoll_wait */
 	if (ws->sockfd >= 0) {
