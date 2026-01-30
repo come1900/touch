@@ -1,29 +1,25 @@
-# Touch - WebSocket Client/Server Tools
+# Touch - Device Management Framework
 
 ## Description
 
-Touch is a comprehensive WebSocket client and server implementation toolkit, providing three executable programs for WebSocket communication testing and development. The toolkit includes:
-- A lightweight native WebSocket client implementation (zero external dependencies except libezutil)
-- A high-performance libwebsockets-based server implementation
-- A high-performance native server implementation using epoll (no libwebsockets dependency)
+Touch is a device management framework that provides WebSocket-based communication for device registration and remote management. The framework includes:
 
-All implementations support real-time bidirectional communication, automatic reconnection, message broadcasting, server-side ping/pong keepalive, and interactive console interfaces for testing and debugging WebSocket applications.
+- **WebSocket Communication Layer**: Reliable WebSocket client/server implementation
+- **Device Registration**: Automatic device registration functionality
+- **Client/Server Applications**: Test programs for device registration workflow
+
+The framework supports automatic reconnection, device authentication, and uses the come.1 JSON protocol for message exchange.
 
 ## Quick Start
 
 ### Requirements
 
-- **Linux environment** with GCC compiler
+- C++11 or higher compiler (GCC 4.8+ / Clang 3.3+)
+- **libezThread** library (must be compiled and installed first)
+- **libezsocket** library (must be compiled and installed first)
 - **libezutil** library (must be compiled and installed first)
-  ```bash
-  cd ../libezutil
-  make && make install
-  ```
-- **libwebsockets** library (required only for `touch-svr-libwebsocket`)
-  - Pre-installed libwebsockets library
-  - Library location: `$(HOME)/libs/libwebsockets-$(PLATFORM)/lib/libwebsockets.a`
-  - Include location: `$(HOME)/libs/libwebsockets-$(PLATFORM)/include/`
-  - Note: `touch-svr-native` does not require libwebsockets
+- **come.1** protocol library (located at `../come.1/`)
+- **nlohmann/json** library (located at `$(HOME)/libs/json-hpp/`)
 
 ### Installation
 
@@ -32,136 +28,38 @@ cd touch
 make
 ```
 
-This will generate (with PLATFORM suffix, e.g., `linux`, `linux-mipsel-openwrt-linux`):
-- `touch-cli-native-$(PLATFORM)` - WebSocket client executable (native implementation)
-- `touch-svr-libwebsocket-$(PLATFORM)` - WebSocket server executable (libwebsockets-based)
-- `touch-svr-native-$(PLATFORM)` - WebSocket server executable (native implementation, no libwebsockets dependency)
-
-For convenience, you can create symbolic links:
-```bash
-ln -s touch-cli-native-$(PLATFORM) touch-cli
-ln -s touch-svr-libwebsocket-$(PLATFORM) touch-svr
-```
-
-### Running Tests
-
-```bash
-# Start server in background (using libwebsockets version)
-./touch-svr-libwebsocket-$(PLATFORM) -p 8080 &
-
-# Or use native server (no libwebsockets dependency)
-# ./touch-svr-native-$(PLATFORM) -p 8080 &
-
-# Start client and connect to server
-./touch-cli-native-$(PLATFORM) -h localhost -p 8080
-
-# Send test messages
-# Server console commands: clients, send <id> <msg>, status, help, quit/exit
-# Client console commands: status, help, quit, or any message to send
-```
+This will generate two executables:
+- `touchCli-$(PLATFORM)` - Client program
+- `touchSvr-$(PLATFORM)` - Server program
 
 ## Usage
 
-### touch-svr-libwebsocket (Server - libwebsockets-based)
-
-Start the WebSocket server with default configuration:
+### Running the Server
 
 ```bash
-./touch-svr-libwebsocket-$(PLATFORM)
+./touchSvr-$(PLATFORM) [-p|--port PORT]
 ```
 
-Available command-line options:
-- `-p PORT` - Server port (default: 54321)
-- `--protocol PROTOCOL` - WebSocket subprotocol (default: come.0)
-- `-d LEVEL` - Log level (default: 7)
-- `-o` - Once mode (optional)
+Default port: 54321
 
-Server console commands after startup:
-- `clients` - Show connected clients list
-- `send <id> <msg>` - Send message to specific client by ID
-- `status` - Show server status
-- `help` - Show help information
-- `quit/exit` - Shutdown server
-- Other input - Broadcast message to all clients
-
-### touch-svr-native (Server - Native Implementation)
-
-Alternative server implementation without libwebsockets dependency:
+### Running the Client
 
 ```bash
-./touch-svr-native-$(PLATFORM) -p 8080
+./touchCli-$(PLATFORM) [server_addr] [port] [device_id] [device_key] [device_type]
 ```
 
-This version has the same console commands as the libwebsockets version but does not require the libwebsockets library.
-
-### touch-cli-native (Client)
-
-Connect to WebSocket server:
-
+Example:
 ```bash
-./touch-cli-native-$(PLATFORM) -h localhost -p 8080
+# Terminal 1: Start server
+./touchSvr-$(PLATFORM)
+
+# Terminal 2: Start client
+./touchCli-$(PLATFORM) localhost 54321 device001 key001 touch
 ```
 
-Available command-line options:
-- `-h, --host HOST` - Server hostname (default: localhost)
-- `-s, --server HOST` - Alias for --host
-- `-p, --port PORT` - Server port (default: 54321)
-- `-u, --url PATH` - WebSocket URL path (default: /come)
-- `--protocol PROTOCOL` - WebSocket subprotocol (default: come.0)
-
-Client console commands after connection:
-- `status` - Show connection status
-- `help` - Show help information
-- `quit` - Exit program
-- Other input - Send message to server
-
-### Programmatic Usage
-
-Include the corresponding header files in your projects:
-
-For client (native implementation):
-```c
-#include "ez_wsclient-native.h"
-```
-
-For server (libwebsockets-based):
-```c
-#include "ez_wsserver-libwebsocket.h"
-```
-
-For server (native implementation, no libwebsockets dependency):
-```c
-#include "ez_wsserver-native.h"
-```
-
-## Architecture
-
-### touch-cli-native (Client)
-- **Native Linux implementation** using epoll/timerfd/socket
-- **Zero external dependencies** (except libezutil)
-- **Automatic reconnection** with exponential backoff
-- **Heartbeat keep-alive** functionality
-- **Interactive console** interface
-
-### touch-svr-libwebsocket (Server - libwebsockets-based)
-- **libwebsockets-based** high-performance implementation
-- **Multi-client management** with connection tracking
-- **Broadcast and unicast messaging** support
-- **Client list management** and monitoring
-- **Interactive console** interface for server control
-- **Server-side ping/pong** keepalive with configurable intervals and jitter
-- **Idle timeout** for connection cleanup
-
-### touch-svr-native (Server - Native Implementation)
-- **High-performance native Linux implementation** using epoll/timerfd/socket
-- **Zero external dependencies** (except libezutil, no libwebsockets required)
-- **Multi-client management** with connection tracking
-- **Broadcast and unicast messaging** support
-- **Client list management** and monitoring
-- **Interactive console** interface for server control
-- **Server-side ping/pong** keepalive with configurable intervals and jitter
-- **Idle timeout** for connection cleanup
+The client automatically connects to the server and sends device registration requests. The server validates device information and returns registration results.
 
 ## License
-MIT License
+
+This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version.
 

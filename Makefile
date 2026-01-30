@@ -1,101 +1,102 @@
-
+# Copyright (C) 2025  ezlibs.com
+#
+# platforms:
 PLATFORM = linux
 #PLATFORM = linux-x86-32
-#PLATFORM = linux-x86-64
 #PLATFORM = linux-hi3515
 #PLATFORM = linux-arm
-#PLATFORM = osx
-#PLATFORM = linux-mips-openwrt
-#PLATFORM = linux-mips-mipsl-openwrt
+#PLATFORM = linux-x86-64-centos5
+#PLATFORM = linux-am335x
 
-PLATFORM = linux-mipsel-openwrt-linux
+PROJECT_NAME=touch
+DEF_VERSION =	1.0.0
+DIFF_VERSION =	0.0.0
 
-include         ../../library/Makefile.Defines/Makefile.Defines.$(PLATFORM)
+include         ../lazaru/Makefile.Defines/Makefile.Defines.$(PLATFORM)
+
+CFLAGS += -std=c++11 -Wall -g -O2 -MD
+CFLAGS += -D_DEBUG #debugme
+
+##############################################################################
+# 代码文件位置
+TOUCH_BASEDIR_SRC=./
+
+##############################################################################
+#库文件位置
+#使用发布库
+EZLIBS_BASEDIR_LIBS=$(HOME)/libs
+
+OBJS_DEVWS = \
+		$(TOUCH_BASEDIR_SRC)/devWsRegister/DevWsRegisterCli.o \
+		$(TOUCH_BASEDIR_SRC)/devWsRegister/DevWsRegisterSvr.o
+
+OBJS_FUNCREG = \
+		$(TOUCH_BASEDIR_SRC)/funcRegister/FunRegisterCli.o \
+		$(TOUCH_BASEDIR_SRC)/funcRegister/FunRegisterSvr.o
+
+OBJS_TOUCHCLI = \
+		$(TOUCH_BASEDIR_SRC)/touchCli/Main.o
+
+OBJS_TOUCHSVR = \
+		$(TOUCH_BASEDIR_SRC)/touchSvr/Main.o
+
+OBJS_COME1 = \
+		../come.1/json/come.1.json.o
 
 
-CFLAGS += -Wall 
-CFLAGS +=  -O2
-CFLAGS +=  -g -std=c99
-CFLAGS += -D_POSIX_C_SOURCE=200809L
 
-CFLAGS += -I$(HOME)/libs/libwebsockets-$(PLATFORM)/include/
+CFLAGS += -I${EZLIBS_BASEDIR_LIBS}/include/ezThread
+LIBS += -L${EZLIBS_BASEDIR_LIBS}/lib -lezThread-$(PLATFORM)
 
-# use static libs
-LIBS   += $(HOME)/libs/libwebsockets-$(PLATFORM)/lib/libwebsockets.a
+CFLAGS += -I${EZLIBS_BASEDIR_LIBS}/include/ezsocket
+LIBS += -L${EZLIBS_BASEDIR_LIBS}/lib -lezsocket-$(PLATFORM)
 
-CFLAGS += -I$(HOME)/libs/include
-# CFLAGS += -I$(HOME)/libs/include/ezutil
-LIBS   += -L$(HOME)/libs/lib -lezutil-$(PLATFORM)
+CFLAGS += -I${EZLIBS_BASEDIR_LIBS}/include/
+CFLAGS += -I${EZLIBS_BASEDIR_LIBS}/include/ezutil
+LIBS += -L${EZLIBS_BASEDIR_LIBS}/lib -lezutil-$(PLATFORM)
 
-# LIBS += -lssl -lcrypto
-#ifeq ($(PLATFORM),macosx)
-#else
-	LIBS += -lrt
-#endif
+CFLAGS += -I${EZLIBS_BASEDIR_LIBS}/json-hpp
+CFLAGS += -I../come.1
+CFLAGS += -I../come.1/json
+CFLAGS += -I./devWsRegister
+CFLAGS += -I./funcRegister
 
-LIBS += -lm -lpthread
+LIBS += -lpthread
+LIBS += -lrt
+LIBS += -lm
 
-# 原生版本链接库（不包含 libwebsockets）
-LIBS_NATIVE = -L$(HOME)/libs/lib -lezutil-$(PLATFORM)
-LIBS_NATIVE += -lrt
-LIBS_NATIVE += -lm -lpthread
+#客户端程序
+OBJS_TOUCHCLI_P += $(OBJS_DEVWS) $(OBJS_FUNCREG) $(OBJS_TOUCHCLI) $(OBJS_COME1)
+DIST_TOUCHCLI = touchCli-$(PLATFORM)
 
-#CPPFLAGS += -std=c++11
-CPPFLAGS += $(CFLAGS)
+#服务端程序
+OBJS_TOUCHSVR_P += $(OBJS_DEVWS) $(OBJS_FUNCREG) $(OBJS_TOUCHSVR) $(OBJS_COME1)
+DIST_TOUCHSVR = touchSvr-$(PLATFORM)
 
-C_SRC = $(wildcard *.c)
-C_OBJ = $(patsubst %c, %o, $(C_SRC))
-CPP_SRC = $(wildcard *.cpp)
-CPP_OBJ = $(patsubst %cpp, %o, $(CPP_SRC))
-PROGS =
-PROGS += touch-cli-native-$(PLATFORM)
-PROGS += touch-svr-native-$(PLATFORM)
-PROGS += touch-svr-libwebsocket-$(PLATFORM)
+DIST =	$(DIST_TOUCHCLI) $(DIST_TOUCHSVR)
 
-.PHONY:all clean
+all: $(DIST)
 
-all:$(CPP_OBJ) $(C_OBJ) $(PROGS)
+$(DIST_TOUCHCLI):$(OBJS_TOUCHCLI_P)
+	$(CPP) -o $@ $^ $(LIBS)
 
-# 原生 WebSocket 客户端可执行程序
-touch-cli-native-$(PLATFORM): touch-cli-native.o ez_wsclient-native.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+$(DIST_TOUCHSVR):$(OBJS_TOUCHSVR_P)
+	$(CPP) -o $@ $^ $(LIBS)
 
-touch-cli-native.o: touch-cli-native.c ez_wsclient-native.h
-	$(CC) $(CFLAGS) -c -o $@ $<
+tar:	clean
+	tar -czf $(PROJECT_NAME).tgz *.h *.cpp Makefile*
 
-ez_wsclient-native.o: ez_wsclient-native.c ez_wsclient-native.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# libwebsockets WebSocket 服务器可执行程序
-touch-svr-libwebsocket-$(PLATFORM): touch-svr-libwebsocket.o ez_wsserver-libwebsocket.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
-
-touch-svr-libwebsocket.o: touch-svr-libwebsocket.c ez_wsserver-libwebsocket.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-ez_wsserver-libwebsocket.o: ez_wsserver-libwebsocket.c ez_wsserver-libwebsocket.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# 原生 WebSocket 服务器可执行程序（不依赖 libwebsockets）
-touch-svr-native-$(PLATFORM): touch-svr-native.o ez_wsserver-native.o
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS_NATIVE)
-
-touch-svr-native.o: touch-svr-native.c ez_wsserver-native.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-ez_wsserver-native.o: ez_wsserver-native.c ez_wsserver-native.h
-	$(CC) $(CFLAGS) -c -o $@ $<
+-include *.d
 
 .c.o:
-	$(CC) $(CFLAGS) -c -o $@ $< 
+	$(CC) -c $(CFLAGS) $< -o $@
+
 .cpp.o:
-	$(CPP) $(CPPFLAGS) -o $@ $< $(LIBS)
+	$(CPP) -c $(CFLAGS) $< -o $@
+
+CLEAN_FILES = $(DIST) *.o *.gdb *.d *.cfbk *.tgz
+CLEAN_FILES += $(OBJS_DEVWS) $(OBJS_FUNCREG) $(OBJS_TOUCHCLI) $(OBJS_TOUCHSVR) $(OBJS_COME1)
 
 clean:
-	rm *~ *.o -f *.cfbk *.d *.orig *.dmp $(PROGS)
-
-test: ut-ez_websocket_parser
-	./ut-ez_websocket_parser
-
-dbg:all
-	scp *linux-mipsel-openwrt-linux root@192.168.9.76:/opt/touch/
+	rm -f $(CLEAN_FILES)
+	find . -name "*.d" | xargs rm -f 2>/dev/null || true
